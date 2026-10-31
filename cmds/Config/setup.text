@@ -1,0 +1,191 @@
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ContainerBuilder,
+  TextDisplayBuilder,
+  MessageFlags,
+  PermissionFlagsBits,
+} = require("discord.js");
+
+// Assuming these are your database models for the protection features
+const Antilink = require("@data/antilink");
+const Antispam = require("@data/antispam");
+const Antinuke = require("@data/antinuke");
+
+// Helper function to create the setup container at each step
+function createSetupContainer(log, currentQuestion, client) {
+  const container = new ContainerBuilder();
+
+  // Add the single loading line at the top
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `${client.emoji.loading} **Server Setup Wizard**`
+    )
+  );
+
+  // Add all previous log entries
+  log.forEach((entry) => {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(entry)
+    );
+  });
+
+  // Add the current question and buttons
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`\n${currentQuestion}`)
+  );
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("setup_yes")
+      .setLabel("Enable")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("setup_no")
+      .setLabel("Disable")
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  container.addActionRowComponents(row);
+  return [container];
+}
+
+// Helper function to create the final complete container
+function createCompleteContainer(log, client) {
+  const container = new ContainerBuilder();
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `${client.emoji.tick} **Setup Complete!**\n\nAll selected features have been configured. Thank you!`
+    )
+  );
+  if (log.length > 0) {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("---")
+    );
+    log.forEach((entry) => {
+      container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(entry)
+      );
+    });
+  }
+  return [container];
+}
+
+// Helper function to create a timeout container
+function createTimeoutContainer(client) {
+  const container = new ContainerBuilder();
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `${client.emoji.cross} **Setup timed out.** Please run the command again.`
+    )
+  );
+  return [container];
+}
+
+// The main function to run the sequential setup
+async function runSetupSequence(message, guildId, client) {
+  const log = []; // An array to store the log of actions
+  let currentStep = 0;
+
+  const features = [
+    {
+      name: "Anti-Link",
+      description:
+        "This feature automatically deletes messages containing links from unapproved users.",
+      db: Antilink,
+      command: "antilink",
+    },
+    {
+      name: "Anti-Spam",
+      description:
+        "Prevents users from flooding chat with repetitive messages, keeping your channels clean.",
+      db: Antispam,
+      command: "antispam",
+    },
+    {
+      name: "Anti-Nuke",
+      description:
+        "Safeguards your server from mass channel deletions, kicks, or bans by malicious accounts.",
+      db: Antinuke,
+      command: "antinuke",
+    },
+  ];
+
+  const firstQuestion = `**${features[currentStep].name}**\n${features[currentStep].description}\n\nDo you want to enable this feature?`;
+  const setupMessage = await message.reply({
+    flags: MessageFlags.IsComponentsV2,
+    components: createSetupContainer(log, firstQuestion, client),
+  });
+
+  const collector = setupMessage.createMessageComponentCollector({
+    filter: (i) => i.user.id === message.author.id,
+    time: 120000, // 2 minutes
+  });
+
+  collector.on("collect", async (interaction) => {
+    await interaction.deferUpdate();
+
+    if (currentStep >= features.length) {
+      return; // Stop processing if setup is already complete
+    }
+
+    const feature = features[currentStep];
+    let statusMessage = "";
+
+    // Update the database based on the user's choice
+    if (interaction.customId === "setup_yes") {
+      // Create a document with 'enabled' set to false by default
+      await feature.db.create({ guildId: guildId, isEnabled: true });
+      statusMessage = `${client.emoji.tick} **${feature.name}** has been **configured**! It is currently **disabled**. Use \`${client.prefix}${feature.command}\` to manage it.`;
+    } else {
+      await feature.db.findOneAndDelete({ guildId: guildId });
+      statusMessage = `${client.emoji.cross} **${feature.name}** has been **disabled**!`;
+    }
+
+    log.push(statusMessage);
+    currentStep++;
+
+    // Check if there are more features to configure
+    if (currentStep < features.length) {
+      const nextQuestion = `**${features[currentStep].name}**\n${features[currentStep].description}\n\nDo you want to enable this feature?`;
+      await setupMessage.edit({
+        components: createSetupContainer(log, nextQuestion, client),
+      });
+    } else {
+      // End of the setup
+      await setupMessage.edit({
+        components: createCompleteContainer(log, client),
+      });
+      collector.stop();
+    }
+  });
+
+  collector.on("end", async (collected, reason) => {
+    if (reason === "time") {
+      await setupMessage.edit({ components: createTimeoutContainer(client) });
+    }
+  });
+}
+
+module.exports = {
+  name: "setup",
+  category: "Config",
+  description: "Configure server protection features step-by-step.",
+  userPerms: [PermissionFlagsBits.Administrator],
+  botPerms: [PermissionFlagsBits.SendMessages],
+  cooldown: 5,
+
+  execute: async (message, args, client, prefix) => {
+    const guildId = message.guild.id;
+    try {
+      await runSetupSequence(message, guildId, client);
+    } catch (error) {
+      console.error("Setup command error:", error);
+      await message.reply({
+        content: "An error occurred while starting the setup process.",
+        ephemeral: true,
+      });
+    }
+  },
+};
