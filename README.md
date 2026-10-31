@@ -196,3 +196,9 @@ If a secret was committed, deleting it in a later commit is not enough: remove i
 ## Disclaimer
 
 This repository is provided as-is. You are responsible for configuring third-party services, Discord permissions, hosting, and credentials securely.
+## License
+
+Copyright (c) 2026 krypton-dc
+
+This project is licensed under the MIT License.
+See the [LICENSE](LICENSE) file for details.
